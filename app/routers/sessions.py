@@ -19,6 +19,7 @@ async def start_session(body: StartSessionRequest):
         language=body.language,
         voice_gender=body.voice_gender,
         question_count=body.question_count,
+        mode=body.mode,
     )
     return result
 
@@ -91,10 +92,12 @@ async def get_state(session_id: str):
     state = redis_service.get_session_state(session_id)
     complete = redis_service.is_profile_complete(session_id)
     missing = redis_service.get_missing_profile_fields(session_id)
+    mail_available = redis_service.get_selected_formula(session_id) is not None
     return {
         "state": state,
         "profile_complete": complete,
         "missing_fields": missing,
+        "mail_available": mail_available,
     }
 
 

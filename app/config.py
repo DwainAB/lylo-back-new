@@ -32,6 +32,14 @@ class Settings(BaseSettings):
     # Redis
     redis_url: str = "redis://localhost:6379"
 
+    # SMTP (email sending — OVH MX Plan)
+    smtp_host: str = "ssl0.ovh.net"
+    smtp_port: int = 587
+    smtp_user: str = ""
+    smtp_password: str = ""
+    smtp_from: str = ""
+    internal_email: str = ""
+
     @property
     def voice_mapping(self) -> dict[str, dict[str, str]]:
         return {

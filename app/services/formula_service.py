@@ -19,7 +19,8 @@ from app.data.choice_profile_mapping import (
     PROFILE_GENDERS,
 )
 from app.data.questions import EN_TO_FR_CHOICES
-from app.services import redis_service
+from app.config import get_settings
+from app.services import mail_service, redis_service
 
 # ── Chemins ───────────────────────────────────────────────────────────
 _DATA_DIR = Path(__file__).resolve().parent.parent / "data"
@@ -160,14 +161,25 @@ def _score_profiles(answers: dict, gender: str | None) -> list[tuple[str, float]
 
         en_to_fr = EN_TO_FR_CHOICES.get(qid, {})
 
+        def resolve_fr_choice(choice: str) -> str:
+            """Exact match first, then prefix match (before ' - ') for descriptive labels."""
+            if choice in en_to_fr:
+                return en_to_fr[choice]
+            choice_lower = choice.lower()
+            for key, fr_val in en_to_fr.items():
+                key_prefix = key.split(" - ")[0].lower()
+                if choice_lower == key_prefix or choice_lower == key.lower():
+                    return fr_val
+            return choice
+
         for choice in answer_data.get("top_2", []):
-            fr_choice = en_to_fr.get(choice, choice)
+            fr_choice = resolve_fr_choice(choice)
             profiles = mapping.get(fr_choice, [])
             for p in profiles:
                 scores[p] += 2.0
 
         for choice in answer_data.get("bottom_2", []):
-            fr_choice = en_to_fr.get(choice, choice)
+            fr_choice = resolve_fr_choice(choice)
             profiles = mapping.get(fr_choice, [])
             for p in profiles:
                 scores[p] -= 1.0
@@ -546,6 +558,14 @@ def select_formula(session_id: str, formula_index: int) -> dict:
 
     selected = formulas[formula_index]
     redis_service.save_selected_formula(session_id, selected)
+
+    internal_email = get_settings().internal_email
+    if internal_email:
+        try:
+            mail_service.send_mail(internal_email, session_id, selected)
+        except Exception as e:
+            print(f"[mail] Erreur lors de l'envoi interne : {e}")
+
     return {"formula": selected}
 
 

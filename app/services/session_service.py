@@ -6,7 +6,7 @@ from app.services.livekit_service import create_token
 from app.services import redis_service
 
 
-def create_session(language: str, voice_gender: str, question_count: int) -> dict:
+def create_session(language: str, voice_gender: str, question_count: int, mode: str = "guided") -> dict:
     settings = get_settings()
 
     session_id = str(uuid.uuid4())
@@ -29,6 +29,7 @@ def create_session(language: str, voice_gender: str, question_count: int) -> dic
         room_name=room_name,
         questions=questions,
         agent_token=agent_token,
+        mode=mode,
     )
 
     return {

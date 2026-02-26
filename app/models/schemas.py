@@ -7,6 +7,7 @@ class StartSessionRequest(BaseModel):
     language: Literal["fr", "en"] = "fr"
     voice_gender: Literal["female", "male"] = "female"
     question_count: int = Field(default=1, ge=1, le=12)
+    mode: Literal["guided", "discovery"] = "guided"
 
 
 class StartSessionResponse(BaseModel):
@@ -37,3 +38,7 @@ class ReplaceNoteRequest(BaseModel):
     note_type: Literal["top", "heart", "base"]
     old_note: str
     new_note: str
+
+
+class SendMailRequest(BaseModel):
+    to: str

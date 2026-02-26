@@ -36,6 +36,7 @@ def save_session_meta(
     room_name: str,
     questions: list,
     agent_token: str,
+    mode: str = "guided",
 ) -> None:
     r = _get_client()
     r.hset(f"session:{session_id}:meta", mapping={
@@ -45,6 +46,7 @@ def save_session_meta(
         "room_name": room_name,
         "questions": json.dumps(questions),
         "agent_token": agent_token,
+        "mode": mode,
         "created_at": datetime.now(timezone.utc).isoformat(),
     })
     r.sadd("sessions:index", session_id)

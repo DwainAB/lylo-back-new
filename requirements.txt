@@ -13,3 +13,4 @@ openai
 redis
 httpx
 openpyxl
+weasyprint

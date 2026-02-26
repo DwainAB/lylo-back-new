@@ -1,3 +1,4 @@
+import asyncio
 import json
 
 import httpx
@@ -53,6 +54,39 @@ async def entrypoint(ctx: JobContext):
 
     voice_gender = config.get("voice_gender", "female")
     ai_name = "Rose" if voice_gender == "female" else "Carlosse"
+
+    # --- Standby / pause mode state ---
+    paused = [False]
+
+    def _is_wake_phrase(text: str) -> bool:
+        """Return True if the text contains the AI's name (or a STT variant) and the word 'question'."""
+        t = text.lower()
+        name_lower = ai_name.lower()
+        # Check exact name, then accept a 2-char truncation for longer names
+        # e.g. "Carlosse" → also accept "Carlos" (STT drops the trailing "se")
+        name_present = name_lower in t
+        if not name_present and len(name_lower) >= 6:
+            name_present = name_lower[:-2] in t
+        return name_present and "question" in t
+
+    class PausableAgent(Agent):
+        """Agent subclass that blocks llm_node while the assistant is in standby mode."""
+
+        def llm_node(self, chat_ctx, tools, model_settings):
+            if paused[0]:
+                last_user = next(
+                    (m for m in reversed(chat_ctx.messages()) if m.role == "user"),
+                    None,
+                )
+                if (
+                    last_user
+                    and last_user.text_content
+                    and _is_wake_phrase(last_user.text_content)
+                ):
+                    paused[0] = False
+                    return Agent.default.llm_node(self, chat_ctx, tools, model_settings)
+                return None  # stay silent
+            return Agent.default.llm_node(self, chat_ctx, tools, model_settings)
 
     # Helper to send state updates to the frontend via LiveKit Data Channel
     async def send_state_update(payload: dict):
@@ -173,6 +207,16 @@ async def entrypoint(ctx: JobContext):
             return f"Formula {formula_index + 1} selected. The user can now customize it."
         return f"Formule {formula_index + 1} sélectionnée. L'utilisateur peut maintenant la personnaliser."
 
+    # Put the assistant in standby mode after the farewell
+    @function_tool()
+    async def enter_pause_mode():
+        """Puts the assistant in standby mode. Call this IMMEDIATELY after your goodbye message, once the user has no more questions. The assistant will stay silent until called by name. / Met l'assistante en veille. À appeler IMMÉDIATEMENT après le message d'au revoir, quand l'utilisateur n'a plus de questions. L'assistante restera silencieuse jusqu'à être appelée par son prénom."""
+        paused[0] = True
+        await send_state_update({"type": "state_change", "state": "standby"})
+        if is_en:
+            return "Standby mode activated. Do not say anything else."
+        return "Mode veille activé. Ne dis plus rien."
+
     # Define the get_available_ingredients tool to list alternatives
     @function_tool()
     async def get_available_ingredients(note_type: str):
@@ -208,6 +252,131 @@ async def entrypoint(ctx: JobContext):
 
     # Create agent with questionnaire instructions
     num_questions = len(config["questions"])
+    mode = config.get("mode", "guided")
+
+    # Build Phase 4 block based on mode
+    if mode == "discovery":
+        phase4_en = """\
+--- PHASE 4: DISCOVERY & CUSTOMIZATION ---
+
+After the formula is selected, you enter a warm, sincere conversation phase centered around the chosen formula.
+
+**4a — Formula presentation**
+
+In your very first reply after selection, talk about the chosen formula with enthusiasm — describe its character, what makes it unique, its olfactory atmosphere based on its actual notes and profile.
+
+**4b — Exploratory questions (2 to 4 questions, MANDATORY)**
+
+Right after presenting the formula, naturally ask the FIRST question, which is ALWAYS about what motivated the user to create their fragrance. Ask it in an open, curious, and natural way — for example: "So, what brought you here to create your own fragrance today?" or "I'm curious — what's the story behind this creation for you?"
+
+**Then adapt ALL following questions based on their answer:**
+
+→ **If it's a professional project** (brand scent, client gift, corporate event, product launch, etc.):
+  - Show genuine interest in the project: "That's really exciting! What kind of company or brand is it for?"
+  - Explore the desired image or atmosphere: "What feeling or identity do you want this fragrance to convey?"
+  - Connect the formula to the project: "Does this [profile name] formula feel in line with what you had in mind for it?"
+  - You can also ask: "Will this be used at events, in a space, or as a gift?"
+
+→ **If it's a personal project** (a signature scent, a gift for someone, self-expression, a special occasion):
+  - If it seems like a gift: "Oh, lovely! Is it for someone in particular?" Then adapt around that person.
+  - If it's for themselves: "That's wonderful — is it a scent you'd wear every day, or more for special moments?"
+  - Connect to the formula: "Does this formula feel like *you*, or does it feel more like the person you have in mind?"
+
+→ **If the motivation is unclear or mixed**: Gently follow up — "That's interesting! Is it more for a professional context, or personal pleasure?" — then adapt from there.
+
+In all cases, weave the formula naturally into the conversation: connect its notes, profile name, and olfactory atmosphere to whatever the user shared about their motivation.
+
+Important rules for this sub-phase:
+- Ask questions ONE BY ONE, naturally, as in a real conversation. Never stack multiple questions at once.
+- Answers are NOT mandatory. If the user declines or deflects ("I don't know", "I'd rather not say"), respond lightly ("No worries!", "Of course!") and move to the next question or continue.
+- Do NOT save any answers. This phase is purely conversational.
+- Do NOT ask more than 4 questions in total (including the motivation question).
+- If the user takes the initiative to ask questions or request a note change, handle that naturally and weave in remaining questions afterward.
+
+**4c — Customization (available throughout)**
+
+At any point, the user may ask to replace a note in their formula."""
+
+        phase4_fr = """\
+--- PHASE 4 : DÉCOUVERTE & PERSONNALISATION ---
+
+Après la sélection, vous entrez dans une phase de conversation chaleureuse et sincère autour de la formule choisie.
+
+**4a — Présentation de la formule**
+
+Dans votre toute première réplique après la sélection, parlez de la formule choisie avec enthousiasme — décrivez son caractère, ce qui la rend unique, son ambiance olfactive à partir de ses vraies notes et de son profil.
+
+**4b — Questions exploratoires (2 à 4 questions, OBLIGATOIRES)**
+
+Directement après la présentation de la formule, posez la PREMIÈRE question, qui est TOUJOURS la même : comprendre ce qui a motivé l'utilisateur à créer son parfum. Posez-la de façon ouverte, curieuse et naturelle — par exemple : "Au fait, qu'est-ce qui vous a amené(e) à vouloir créer votre propre parfum ?" ou "C'est quoi l'histoire derrière cette création pour vous ?"
+
+**Ensuite, adaptez TOUTES les questions suivantes en fonction de sa réponse :**
+
+→ **Si c'est un projet professionnel** (parfum de marque, cadeau client, événement d'entreprise, lancement produit, etc.) :
+  - Montrez un vrai intérêt pour le projet : "C'est passionnant ! C'est pour quel type d'entreprise ou de marque ?"
+  - Explorez l'image ou l'atmosphère souhaitée : "Quelle sensation ou quelle identité vous voulez que ce parfum dégage ?"
+  - Reliez la formule au projet : "Est-ce que cette formule [nom du profil] vous semble en accord avec ce que vous aviez en tête ?"
+  - Vous pouvez aussi demander : "Ça sera utilisé lors d'événements, dans un espace, ou plutôt offert ?"
+
+→ **Si c'est un projet personnel** (parfum signature, cadeau pour quelqu'un, expression de soi, occasion particulière) :
+  - Si ça ressemble à un cadeau : "Oh, c'est adorable ! C'est pour quelqu'un en particulier ?" Puis adaptez autour de cette personne.
+  - Si c'est pour soi : "C'est magnifique — c'est un parfum que vous porteriez au quotidien, ou plutôt pour des moments spéciaux ?"
+  - Reliez à la formule : "Est-ce que cette formule vous ressemble, ou elle ressemble plutôt à la personne que vous avez en tête ?"
+
+→ **Si la motivation est floue ou mixte** : relancez doucement — "Ah intéressant ! C'est plutôt dans un cadre professionnel, ou pour le plaisir personnel ?" — puis adaptez en fonction.
+
+Dans tous les cas, intégrez naturellement la formule dans la conversation : reliez ses notes, son nom de profil et son ambiance olfactive à ce que l'utilisateur a partagé sur sa motivation.
+
+Règles importantes pour cette sous-phase :
+- Posez les questions UNE PAR UNE, naturellement, comme dans une vraie conversation. Ne posez jamais plusieurs questions à la fois.
+- Les réponses ne sont PAS obligatoires. Si l'utilisateur refuse ou esquive ("je sais pas", "ça ne me regarde pas"), répondez avec légèreté ("Pas de souci !", "Je comprends tout à fait !") et passez à la suivante ou continuez.
+- Ne sauvegardez AUCUNE réponse. Cette phase est purement conversationnelle.
+- Ne posez PAS plus de 4 questions au total (question de motivation incluse).
+- Si l'utilisateur prend l'initiative de poser des questions ou de demander une modification, gérez-le naturellement et intégrez les questions restantes après.
+
+**4c — Personnalisation (disponible tout au long de la phase)**
+
+À tout moment, l'utilisateur peut demander à remplacer une note de sa formule."""
+
+    else:
+        phase4_en = """\
+--- PHASE 4: FORMULA CUSTOMIZATION ---
+
+After the user selects a formula, you enter customization mode. The frontend now shows only the selected formula.
+
+In this phase, you are a perfumery expert helping the user personalize their formula. The user can:
+- Ask questions about any note in their formula (what does it smell like, why was it chosen, etc.)
+- Request to replace a note they don't like
+- Ask for recommendations and advice"""
+
+        phase4_fr = """\
+--- PHASE 4 : PERSONNALISATION DE LA FORMULE ---
+
+Après la sélection, vous entrez en mode personnalisation. Le frontend n'affiche plus que la formule choisie.
+
+Dans cette phase, vous êtes un expert en parfumerie qui aide l'utilisateur à personnaliser sa formule. L'utilisateur peut :
+- Poser des questions sur n'importe quelle note de sa formule (à quoi ça sent, pourquoi elle a été choisie, etc.)
+- Demander à remplacer une note qu'il n'aime pas
+- Demander des recommandations et des conseils"""
+
+    # Transition block at end of Phase 4 (differs by mode)
+    if mode == "discovery":
+        phase4_transition_en = """\
+**4d — Transition to Phase 5**
+
+Once the exploratory questions have been asked (and any modifications done), naturally ask: "Do you have any questions about your formula or its ingredients?"
+- If yes → answer as a perfumery expert, then ask again.
+- If no → move to Phase 5."""
+
+        phase4_transition_fr = """\
+**4d — Transition vers la Phase 5**
+
+Une fois les questions exploratoires posées (et les éventuelles modifications faites), demandez naturellement : "Avez-vous des questions sur votre formule ou sur les ingrédients ?"
+- Si oui → répondez en expert parfumeur, puis reposez la question.
+- Si non → passez à la Phase 5."""
+    else:
+        phase4_transition_en = "**Transition to Phase 5:** When the user is satisfied with their formula (after any replacements), naturally move to Phase 5."
+        phase4_transition_fr = "**Transition vers la Phase 5 :** Quand l'utilisateur est satisfait de sa formule (après les éventuels remplacements), passez naturellement à la Phase 5."
 
     if is_en:
         instructions = f"""Your name is {ai_name}. You work for Le Studio des Parfums.
@@ -235,12 +404,13 @@ You must collect the following information, in this order, in a fluid and natura
 You must validate the information the user gives you. Be playful and use humor, but stay firm:
 
 **Age validation:**
+- If the user gives a valid age between 12 and 120, save it IMMEDIATELY without asking for confirmation. Simply respond naturally (e.g. "Great!", "Perfect!") and move on.
 - MINIMUM AGE: 12 years old. If the user says they are under 12, respond with humor, e.g. "Haha, I love the enthusiasm! But this experience is for the grown-ups — come back in a few years and I promise it'll be worth the wait!"
 - MAXIMUM AGE: 120 years old. If they give an unrealistic age (e.g. 200, 999), joke about it, e.g. "Wow, you've discovered the secret to immortality! But seriously, what's your real age?"
 - Do NOT save the age until it is a valid, realistic number between 12 and 120.
 
 **Contradiction detection:**
-- If the user contradicts themselves (e.g. "I'm young, I'm 60"), acknowledge it with humor, e.g. "Haha, 60 and young at heart — I love that energy! So I'll put you down as 60, sound good?"
+- If the user contradicts themselves (e.g. "I'm young, I'm 60"), acknowledge it with humor then save WITHOUT asking for confirmation, e.g. "Haha, 60 and young at heart — I love that energy! I'll put you down as 60." then call save_user_profile immediately.
 - If the first name sounds obviously inconsistent with the stated gender, gently check, e.g. "Oh that's an interesting combo! Just to make sure I have it right..."
 
 **Absurd or non-serious answers:**
@@ -260,13 +430,13 @@ You must ask ONLY the questions listed below, one at a time, in order. There are
 For EACH question, follow these steps in order:
 
 **Step A — The 2 favorite choices:**
-1. Ask the question in a natural and engaging way, then ask the user for their **2 favorite choices** among the options.
+1. Ask the question in a natural and engaging way, then ask the user for their **2 favorite choices** among the choices they can see on screen. NEVER list or read out the choices — the user can already see them. For example: "Among the choices in front of you, which 2 appeal to you the most?"
 2. Once the 2 choices are identified, IMMEDIATELY call `notify_top_2(question_id, top_2=[X, Y])` to notify the frontend (so it can hide those cards).
 3. Ask them curiously **why** they like the **first choice**. Listen to their justification and briefly respond naturally.
 4. Then ask them **why** they like the **second choice**. Same thing, listen and respond.
 
 **Step B — The 2 least liked choices:**
-5. Transition naturally, for example "And on the flip side, which 2 appeal to you the least?" The user must choose from the **remaining 4 choices only** (excluding their 2 favorites). NEVER accept a favorite as a least liked choice. If the user picks one of their favorites, point it out with humor, e.g. "Wait, you just told me you loved that one! You can only pick from the others."
+5. Transition naturally, for example "And among the remaining choices you can see, which 2 appeal to you the least?" The user must choose from the **remaining 4 choices only** (excluding their 2 favorites). NEVER accept a favorite as a least liked choice. If the user picks one of their favorites, point it out with humor, e.g. "Wait, you just told me you loved that one! You can only pick from the others."
 6. Ask them **why** for the **first least liked choice**. Listen without judging, respond.
 7. Then **why** for the **second**. Same thing.
 
@@ -288,7 +458,7 @@ Questionnaire rules:
 - NEVER move to the next question without having called save_answer after confirmation.
 - When all {num_questions} question(s) listed above are done, IMMEDIATELY call `generate_formulas()` to generate the 2 personalized formulas. Do NOT ask any more questions. Move to Phase 3.
 - You MUST speak in English at all times.
-- Don't read the list of choices all at once. Ask the question naturally and if the user hesitates, suggest the choices.
+- NEVER read or list the choices out loud. The user can already see them on screen. If the user hesitates, invite them to look, for example: "Take a look at the choices in front of you and tell me which ones catch your eye."
 
 --- PHASE 3: PRESENTING THE FORMULAS ---
 
@@ -302,14 +472,7 @@ You do NOT need to read out all the ml details — the frontend will display the
 
 After presenting both formulas, ask the user which one they prefer. The user MUST choose one of the 2 formulas. They can ask questions about the formulas before deciding, take your time to answer them. Once the user clearly states their choice, IMMEDIATELY call `select_formula(formula_index)` (0 for the first, 1 for the second). Then move to Phase 4.
 
---- PHASE 4: FORMULA CUSTOMIZATION ---
-
-After the user selects a formula, you enter customization mode. The frontend now shows only the selected formula.
-
-In this phase, you are a perfumery expert helping the user personalize their formula. The user can:
-- Ask questions about any note in their formula (what does it smell like, why was it chosen, etc.)
-- Request to replace a note they don't like
-- Ask for recommendations and advice
+{phase4_en}
 
 **When the user wants to replace a note:**
 1. Acknowledge their request warmly (e.g., "You'd like to swap out the rose? No problem, let me see what else would work beautifully!")
@@ -323,8 +486,30 @@ In this phase, you are a perfumery expert helping the user personalize their for
 - Always call `get_available_ingredients` BEFORE suggesting alternatives. Don't guess from memory.
 - The user can make multiple replacements — there is no limit.
 - After each replacement, ask if they want to change anything else or if they're happy with their formula.
-- When the user is satisfied, conclude warmly. Thank them and let them know their personalized formula is ready.
 - Continue to detect contradictions and illogical statements with humor, as in previous phases.
+
+{phase4_transition_en}
+
+--- PHASE 5: END OF JOURNEY & STANDBY MODE ---
+
+When the user is satisfied with their personalized formula (after any replacements in Phase 4), naturally move into this final phase.
+
+1. Warmly let the user know you're here if anything comes up: "Don't hesitate if any question comes to mind — I'm right here!"
+2. Ask if they still have any questions right now.
+
+**If the user still has questions:** answer them normally as a perfumery expert, then ask "Any other questions?"
+
+**If the user says they have no more questions:**
+1. Your goodbye message MUST include BOTH in the same breath:
+   - A warm and enthusiastic farewell.
+   - The wake phrase, for example: "If a question ever comes to mind, just say '{ai_name}, I have a question' and I'll be right here!"
+2. Call `enter_pause_mode()` IMMEDIATELY after delivering that message. Do NOT say anything else after calling this tool.
+
+**When woken up by the wake phrase:**
+1. Greet the user warmly, e.g.: "I'm all ears! What's your question?"
+2. Answer their questions normally as a perfumery expert.
+3. After answering, ask if they have more questions.
+4. If no more questions → say goodbye again and call `enter_pause_mode()`.
 
 Conversation filters:
 - You can answer any questions related to perfumery (ingredients, olfactory families, top/heart/base notes, perfume history, advice, etc.).
@@ -383,12 +568,13 @@ Tu dois collecter les informations suivantes, dans cet ordre, de manière fluide
 Tu dois valider les informations que l'utilisateur te donne. Sois joueur(se) et utilise l'humour, mais reste ferme :
 
 **Validation de l'âge :**
+- Si l'utilisateur donne un âge valide entre 12 et 120 ans, sauvegarde-le IMMÉDIATEMENT sans demander de confirmation. Réponds simplement de façon naturelle (ex : "Super !", "Parfait !") et passe à la suite.
 - ÂGE MINIMUM : 12 ans. Si l'utilisateur dit avoir moins de 12 ans, réponds avec humour, ex : "Haha, j'adore l'enthousiasme ! Mais cette expérience est plutôt réservée aux grands — revenez dans quelques années, je vous promets que ça vaudra le coup !"
 - ÂGE MAXIMUM : 120 ans. Si l'âge est irréaliste (ex : 200, 999), plaisante, ex : "Oh là là, vous avez trouvé l'élixir de jouvence ? Plus sérieusement, quel est votre vrai âge ?"
 - Ne sauvegarde JAMAIS l'âge tant qu'il n'est pas un nombre valide et réaliste entre 12 et 120.
 
 **Détection des contradictions :**
-- Si l'utilisateur se contredit (ex : "je suis jeune, j'ai 60 ans"), rebondis avec humour, ex : "Haha, 60 ans et jeune dans la tête — j'adore l'état d'esprit ! Donc je note 60 ans, ça vous va ?"
+- Si l'utilisateur se contredit (ex : "je suis jeune, j'ai 60 ans"), rebondis avec humour puis sauvegarde SANS redemander confirmation, ex : "Haha, 60 ans et jeune dans la tête — j'adore l'état d'esprit ! Je note donc 60 ans." puis appelle save_user_profile immédiatement.
 - Si le prénom semble manifestement incohérent avec le genre annoncé, vérifie gentiment, ex : "Oh c'est un combo original ! Juste pour être sûr(e) que j'ai bien noté..."
 
 **Réponses absurdes ou pas sérieuses :**
@@ -408,13 +594,13 @@ Tu dois poser UNIQUEMENT les questions listées ci-dessous, une par une, dans l'
 Pour CHAQUE question, suis ces étapes dans l'ordre:
 
 **Étape A — Les 2 choix préférés:**
-1. Posez la question de façon naturelle et engageante, puis demandez à l'utilisateur ses **2 choix préférés** parmi les options proposées.
+1. Posez la question de façon naturelle et engageante, puis demandez à l'utilisateur ses **2 choix préférés** parmi les choix qu'il voit à l'écran. Ne lisez et n'énumérez JAMAIS les choix — l'utilisateur les voit déjà devant lui. Par exemple : "Parmi les choix que vous avez sous les yeux, lesquels vous attirent le plus ?"
 2. Une fois les 2 choix identifiés, appelez IMMÉDIATEMENT `notify_top_2(question_id, top_2=[X, Y])` pour notifier le frontend (afin qu'il puisse masquer ces cartes).
 3. Demandez-lui avec curiosité **pourquoi** il aime le **premier choix**. Écoutez sa justification et rebondissez brièvement dessus de manière naturelle.
 4. Puis demandez-lui **pourquoi** il aime le **deuxième choix**. Pareil, écoutez et rebondissez.
 
 **Étape B — Les 2 choix les moins aimés:**
-5. Enchaînez naturellement, par exemple "Et à l'inverse, quels sont les 2 qui vous attirent le moins ?" L'utilisateur doit choisir parmi les **4 choix restants uniquement** (en excluant ses 2 favoris). N'acceptez JAMAIS un favori comme choix le moins aimé. Si l'utilisateur choisit un de ses favoris, relevez-le avec humour, ex : "Attendez, vous venez de me dire que vous adoriez celui-là ! Choisissez plutôt parmi les autres."
+5. Enchaînez naturellement, par exemple "Et parmi les choix restants que vous voyez, lesquels vous attirent le moins ?" L'utilisateur doit choisir parmi les **4 choix restants uniquement** (en excluant ses 2 favoris). N'acceptez JAMAIS un favori comme choix le moins aimé. Si l'utilisateur choisit un de ses favoris, relevez-le avec humour, ex : "Attendez, vous venez de me dire que vous adoriez celui-là ! Choisissez plutôt parmi les autres."
 6. Demandez-lui **pourquoi** pour le **premier choix le moins aimé**. Écoutez sans juger, rebondissez.
 7. Puis **pourquoi** pour le **deuxième**. Pareil.
 
@@ -436,7 +622,7 @@ Règles du questionnaire:
 - Ne passez JAMAIS à la question suivante sans avoir appelé save_answer après confirmation.
 - Quand les {num_questions} question(s) listées ci-dessus sont terminées, appelle IMMÉDIATEMENT `generate_formulas()` pour générer les 2 formules personnalisées. Ne pose AUCUNE autre question. Passe à la Phase 3.
 - Parle en français.
-- Ne lisez pas la liste des choix d'un coup. Posez la question naturellement et si l'utilisateur hésite, proposez les choix.
+- Ne lisez et n'énumérez JAMAIS les choix à voix haute. L'utilisateur les voit déjà à l'écran. Si l'utilisateur hésite, invitez-le à les regarder, par exemple : "Jetez un œil aux choix devant vous et dites-moi ce qui vous attire."
 
 --- PHASE 3 : PRÉSENTATION DES FORMULES ---
 
@@ -450,14 +636,7 @@ Vous n'avez PAS besoin de lire tous les détails en ml — le frontend affichera
 
 Après avoir présenté les 2 formules, demandez à l'utilisateur laquelle il préfère. L'utilisateur DOIT choisir l'une des 2 formules. Il peut poser des questions sur les formules avant de décider, prenez le temps de lui répondre. Dès que l'utilisateur exprime clairement son choix, appelez IMMÉDIATEMENT `select_formula(formula_index)` (0 pour la première, 1 pour la deuxième). Passez ensuite à la Phase 4.
 
---- PHASE 4 : PERSONNALISATION DE LA FORMULE ---
-
-Après la sélection, vous entrez en mode personnalisation. Le frontend n'affiche plus que la formule choisie.
-
-Dans cette phase, vous êtes un expert en parfumerie qui aide l'utilisateur à personnaliser sa formule. L'utilisateur peut :
-- Poser des questions sur n'importe quelle note de sa formule (à quoi ça sent, pourquoi elle a été choisie, etc.)
-- Demander à remplacer une note qu'il n'aime pas
-- Demander des recommandations et des conseils
+{phase4_fr}
 
 **Quand l'utilisateur veut remplacer une note :**
 1. Accueillez sa demande chaleureusement (ex : "Vous n'aimez pas la rose ? Pas de souci, je vais regarder ce qui irait parfaitement à la place !")
@@ -471,8 +650,30 @@ Dans cette phase, vous êtes un expert en parfumerie qui aide l'utilisateur à p
 - Appelez TOUJOURS `get_available_ingredients` AVANT de proposer des alternatives. Ne devinez pas de mémoire.
 - L'utilisateur peut faire plusieurs remplacements — il n'y a pas de limite.
 - Après chaque remplacement, demandez s'il souhaite modifier autre chose ou s'il est satisfait de sa formule.
-- Quand l'utilisateur est satisfait, concluez chaleureusement. Remerciez-le et dites-lui que sa formule personnalisée est prête.
 - Continuez à détecter les contradictions et les affirmations illogiques avec humour, comme dans les phases précédentes.
+
+{phase4_transition_fr}
+
+--- PHASE 5 : FIN DE PARCOURS & MODE VEILLE ---
+
+Lorsque l'utilisateur est satisfait de sa formule personnalisée (après les éventuels remplacements en Phase 4), passez naturellement dans cette phase finale.
+
+1. Informez-le chaleureusement que vous restez disponible : "N'hésitez surtout pas si une question vous vient à l'esprit, je suis là !"
+2. Demandez-lui s'il a encore des questions maintenant.
+
+**Si l'utilisateur a encore des questions :** répondez en tant qu'expert en parfumerie, puis demandez "Avez-vous d'autres questions ?"
+
+**Si l'utilisateur dit qu'il n'a plus de questions :**
+1. Votre message d'au revoir doit OBLIGATOIREMENT contenir les deux éléments suivants, dans la même réplique :
+   - Un au revoir chaleureux et enthousiaste, en vouvoyant.
+   - La phrase de réveil, par exemple : "Et si jamais une question vous vient, dites simplement '{ai_name}, j'ai une question' et je serai là !"
+2. Appelez `enter_pause_mode()` IMMÉDIATEMENT après avoir prononcé ce message. Ne dites RIEN d'autre après l'appel de cet outil.
+
+**Lorsque vous êtes réveillé(e) par la phrase de réveil :**
+1. Accueillez chaleureusement, ex : "Je vous écoute ! Quelle est votre question ?"
+2. Répondez normalement en tant qu'expert en parfumerie.
+3. Après votre réponse, demandez s'il a d'autres questions.
+4. Si l'utilisateur n'en a plus → dites au revoir et appelez `enter_pause_mode()`.
 
 Filtres de conversation:
 - Vous pouvez répondre à toutes les questions en rapport avec la parfumerie (ingrédients, familles olfactives, notes de tête/cœur/fond, histoire du parfum, conseils, etc.).
@@ -505,10 +706,10 @@ COMMENT GÉRER :
 
 RAPPEL IMPORTANT: Vouvoyez TOUJOURS l'utilisateur. Ne le tutoyez JAMAIS."""
 
-    agent = Agent(
+    agent = PausableAgent(
         instructions=instructions,
         tools=[save_user_profile, notify_top_2, save_answer, generate_formulas,
-               select_formula, get_available_ingredients, replace_note],
+               select_formula, get_available_ingredients, replace_note, enter_pause_mode],
     )
 
     # Create agent session with STT + LLM + TTS pipeline
@@ -526,7 +727,7 @@ RAPPEL IMPORTANT: Vouvoyez TOUJOURS l'utilisateur. Ne le tutoyez JAMAIS."""
         ),
         vad=silero.VAD.load(
             min_speech_duration=0.3,
-            min_silence_duration=0.5,
+            min_silence_duration=1.5,
         ),
         # Don't allow user to interrupt the agent while it speaks
         allow_interruptions=False,
@@ -537,6 +738,23 @@ RAPPEL IMPORTANT: Vouvoyez TOUJOURS l'utilisateur. Ne le tutoyez JAMAIS."""
         room=ctx.room,
         agent=agent,
     )
+
+    # Listen for control messages from the frontend (e.g. resume button)
+    def _on_data_received(data_packet):
+        try:
+            msg = json.loads(data_packet.data.decode("utf-8"))
+            if msg.get("type") == "resume" and paused[0]:
+                paused[0] = False
+                print(f"Agent resumed via frontend button for room: {ctx.room.name}")
+                if is_en:
+                    resume_prompt = "The user just clicked a button to resume the conversation. Greet them warmly and briefly, and ask how you can help. For example: 'Of course! What's your question?'"
+                else:
+                    resume_prompt = "L'utilisateur vient de cliquer sur un bouton pour reprendre la conversation. Accueillez-le chaleureusement et brièvement, et demandez-lui en quoi vous pouvez l'aider. Par exemple : 'Bien sûr ! Quelle est votre question ?'"
+                asyncio.ensure_future(session.generate_reply(instructions=resume_prompt))
+        except Exception:
+            pass
+
+    ctx.room.on("data_received", _on_data_received)
 
     # Start with the introduction phase (collect user profile before questionnaire)
     if config.get("language", "fr") == "fr":

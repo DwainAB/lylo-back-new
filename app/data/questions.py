@@ -7,12 +7,12 @@ QUESTIONS_EN = [
     {
         "id": 2,
         "question": "Which city would you prefer to visit?",
-        "choices": ["New York", "Athens", "Delhi", "Monsanto", "Beijing", "Timbuktu"],
+        "choices": ["New York - The city that never sleeps", "Athens - The city of history", "Delhi - A feast of spices", "Monsanto - A stone village", "Beijing - Intercultural majesty", "Timbuktu - Unreachable mirage"],
     },
     {
         "id": 3,
         "question": "What kind of restaurant do you prefer?",
-        "choices": ["Gourmet", "Salad", "Couscous", "Molecular Cuisine", "Steak House", "Dessert"],
+        "choices": ["Gourmet - Discovery and refinement", "Salad - Light on calories, light on budget", "Couscous - When the belly takes over", "Molecular Cuisine - Adventure above all", "Steak House - The safe bet", "Dessert - Indulgence without guilt"],
     },
     {
         "id": 4,
@@ -64,8 +64,8 @@ QUESTIONS_EN = [
 # Mapping des choix anglais vers les clés françaises (utilisées par le scoring)
 EN_TO_FR_CHOICES = {
     1: {"City": "Ville", "Forest": "Fôret", "Countryside": "Campagne", "Mountain": "Montagne", "Desert": "Désert", "Beach": "Plage"},
-    2: {"New York": "New york", "Athens": "Athène", "Delhi": "Delhi", "Monsanto": "Monsanto", "Beijing": "Pekin", "Timbuktu": "Tombouctou"},
-    3: {"Gourmet": "Gastronomique", "Salad": "Salade", "Couscous": "Couscous", "Molecular Cuisine": "Cuisine Moléculaire", "Steak House": "Steak House", "Dessert": "Déssert"},
+    2: {"New York - The city that never sleeps": "New york", "Athens - The city of history": "Athène", "Delhi - A feast of spices": "Delhi", "Monsanto - A stone village": "Monsanto", "Beijing - Intercultural majesty": "Pekin", "Timbuktu - Unreachable mirage": "Tombouctou"},
+    3: {"Gourmet - Discovery and refinement": "Gastronomique", "Salad - Light on calories, light on budget": "Salade", "Couscous - When the belly takes over": "Couscous", "Molecular Cuisine - Adventure above all": "Cuisine Moléculaire", "Steak House - The safe bet": "Steak House", "Dessert - Indulgence without guilt": "Déssert"},
     4: {"Sport": "Sport", "Meeting locals": "Rencontre population", "Discovery walk": "Promenade découverte", "Museum and art": "Musée et art", "Music, bar, club and casino": "musique, bar, club et casino", "Reading, movies and beach": "lecture, film et plage"},
     5: {"Endurance": "Endurance", "Team": "équipe", "Precision": "Précision", "Adventure": "Aventure", "Weightlifting": "Musculation", "Leisure": "Agrément"},
     6: {"Classical": "Classique", "Lyrical and choral": "Lyrique et choral", "Electronic and modern": "Electonique et moderne", "Jazz and new age": "Jazz et new edge", "World music": "Son d'ailleurs", "Rock": "Rock"},
@@ -121,12 +121,12 @@ QUESTIONS_FR = [
     {
         "id": 2,
         "question": "Quelle ville préfériez-vous visiter ?",
-        "choices": ["New york", "Athène", "Delhi", "Monsanto", "Pekin", "Tombouctou"],
+        "choices": ["New york - La ville qui ne dort jamais", "Athène - L'histoire", "Delhi - Délices des épices", "Monsanto - Une ville de pierre", "Pekin - La majesté interculturelle", "Tombouctou - Mirage inaccecible"],
     },
     {
         "id": 3,
         "question": "Quelle genre de restaurant préférez-vous ?",
-        "choices": ["Gastronomique", "Salade", "Couscous", "Cuisine Moléculaire", "Steak House", "Déssert"],
+        "choices": ["Gastronomique - Découverte et raffinement", "Salade - Anti kilo anti budget", "Couscous - Quand la panse ne pense plus", "Cuisine Moléculaire - L'aventure avant tout", "Steak House - La valeur sûre", "Déssert - Gourmandise sans complexe"],
     },
     {
         "id": 4,
