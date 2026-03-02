@@ -5,7 +5,7 @@ import httpx
 from dotenv import load_dotenv
 
 from livekit.agents import Agent, AgentSession, JobContext, WorkerOptions, cli, function_tool
-from livekit.plugins import cartesia, deepgram, openai, silero
+from livekit.plugins import bey, cartesia, deepgram, openai, silero
 
 from app.config import get_settings
 
@@ -14,6 +14,9 @@ from app.config import get_settings
 load_dotenv()
 
 settings = get_settings()
+
+BEY_AVATAR_FEMALE = "694c83e2-8895-4a98-bd16-56332ca3f449"
+BEY_AVATAR_MALE = "b63ba4e6-d346-45d0-ad28-5ddffaac0bd0_v2"
 
 
 async def entrypoint(ctx: JobContext):
@@ -773,7 +776,12 @@ RAPPEL IMPORTANT: Vouvoyez TOUJOURS l'utilisateur. Ne le tutoyez JAMAIS."""
         allow_interruptions=False,
     )
 
-    # Connect agent to room
+    # Start Beyond Presence avatar in background — don't block conversation start
+    avatar_id = BEY_AVATAR_FEMALE if voice_gender == "female" else BEY_AVATAR_MALE
+    avatar = bey.AvatarSession(avatar_id=avatar_id)
+    asyncio.ensure_future(avatar.start(session, room=ctx.room))
+
+    # Connect agent to room immediately (avatar connects in background)
     await session.start(
         room=ctx.room,
         agent=agent,

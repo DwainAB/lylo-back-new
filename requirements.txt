@@ -9,6 +9,7 @@ livekit-plugins-deepgram
 livekit-plugins-openai
 livekit-plugins-silero
 livekit-plugins-turn-detector
+livekit-plugins-bey
 openai
 redis
 httpx
