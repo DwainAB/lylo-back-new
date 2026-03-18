@@ -7,7 +7,7 @@ from app.database import crud
 router = APIRouter(prefix="/lookup", tags=["lookup"])
 
 
-@router.get("/")
+@router.get("")
 async def lookup_by_email(email: str, db: AsyncSession = Depends(get_db)):
     customer = await crud.get_customer_by_email(db, email)
     if customer:
