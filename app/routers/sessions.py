@@ -23,11 +23,14 @@ router = APIRouter(prefix="/api", tags=["sessions"])
 async def start_session(body: StartSessionRequest, db: AsyncSession = Depends(get_db)):
     if body.email:
         customer = await crud.get_customer_by_email(db, body.email)
-        if not customer:
-            raise HTTPException(status_code=404, detail="Client introuvable")
-        if int(customer.sessions_available) <= 0:
-            raise HTTPException(status_code=403, detail="Aucune session disponible")
-        await crud.update_customer(db, customer.id, sessions_available=int(customer.sessions_available) - 1)
+        if customer:
+            if int(customer.sessions_available) <= 0:
+                raise HTTPException(status_code=403, detail="Aucune session disponible")
+            await crud.update_customer(db, customer.id, sessions_available=int(customer.sessions_available) - 1)
+        else:
+            member = await crud.get_team_member_by_email(db, body.email)
+            if not member:
+                raise HTTPException(status_code=404, detail="Email introuvable")
 
     result = session_service.create_session(
         language=body.language,
