@@ -797,13 +797,14 @@ RAPPEL IMPORTANT: Vouvoyez TOUJOURS l'utilisateur. Ne le tutoyez JAMAIS."""
     avatar_id = pick_avatar(voice_gender)
     avatar = bey.AvatarSession(avatar_id=avatar_id)
 
-    async def _start_avatar():
-        try:
-            await avatar.start(session, room=ctx.room)
-        except Exception as e:
-            print(f"Avatar start failed (user may have disconnected early): {e}")
-
-    avatar_task = asyncio.ensure_future(_start_avatar())
+    # Start avatar BEFORE session.start() so that output.audio is already set to
+    # DataStreamAudioOutput when session.start() runs. This prevents session.start()
+    # from creating a RoomIO audio track in parallel, which would cause the greeting
+    # to be played twice (once via RoomIO, once via the avatar DataStream).
+    try:
+        await asyncio.wait_for(avatar.start(session, room=ctx.room), timeout=15.0)
+    except (asyncio.TimeoutError, Exception) as e:
+        print(f"Avatar start failed or timed out, proceeding without avatar: {e}")
 
     # Connect agent to room
     await session.start(
@@ -827,12 +828,6 @@ RAPPEL IMPORTANT: Vouvoyez TOUJOURS l'utilisateur. Ne le tutoyez JAMAIS."""
             pass
 
     ctx.room.on("data_received", _on_data_received)
-
-    # Wait for avatar to be ready before greeting to avoid the first message being cut off
-    try:
-        await asyncio.wait_for(asyncio.shield(avatar_task), timeout=10.0)
-    except (asyncio.TimeoutError, Exception) as e:
-        print(f"Avatar not ready within timeout, proceeding anyway: {e}")
 
     # Start with the introduction phase (collect user profile before questionnaire)
     if config.get("language", "fr") == "fr":
