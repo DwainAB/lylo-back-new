@@ -22,7 +22,9 @@ def save_session_meta(
     room_name: str,
     questions: list,
     mode: str = "guided",
+    input_mode: str = "voice",
     customer_email: str | None = None,
+    avatar: bool = True,
 ) -> None:
     mapping = {
         "language": language,
@@ -31,6 +33,8 @@ def save_session_meta(
         "room_name": room_name,
         "questions": questions,
         "mode": mode,
+        "input_mode": input_mode,
+        "avatar": avatar,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     if customer_email:

@@ -163,7 +163,7 @@ INGREDIENT_EN_TO_FR = {
     "Floral honey": "Miel floral",
     "Blond tobacco": "Tabac blond",
     # BASE NOTES
-    "Sweet amber": "Ambre sucré",
+    "Sweet amber": "Ambre doux",
     "Iris powder": "Poudre d'iris",
     "Sweet note": "Note sucrée",
     "Woody bouquet": "Bouquet boisé",

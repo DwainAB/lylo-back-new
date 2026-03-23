@@ -85,6 +85,8 @@ async def entrypoint(ctx: JobContext):
 
     voice_gender = config.get("voice_gender", "female")
     ai_name = "Rose" if voice_gender == "female" else "Florian"
+    use_avatar = config.get("avatar", True)
+    input_mode = config.get("input_mode", "voice")  # "voice" | "click"
 
     # --- Standby / pause mode state ---
     paused = [False]
@@ -115,7 +117,7 @@ async def entrypoint(ctx: JobContext):
             # before real speech arrives. Under bad network conditions Bey's pipeline
             # needs more time; without this the greeting audio is silently dropped and
             # playback_finished never fires, leaving the agent hanging.
-            if _first_tts_call[0]:
+            if use_avatar and _first_tts_call[0]:
                 _first_tts_call[0] = False
                 warmup_frames = 100  # 100 × 20ms = 2s
                 print(f"[TTS_NODE:{tts_call_id}] prepending {warmup_frames * 20}ms warmup silence at {time.time():.3f}")
@@ -145,15 +147,16 @@ async def entrypoint(ctx: JobContext):
 
             print(f"[TTS_NODE:{tts_call_id}] Cartesia done — {frame_count} frames at {time.time():.3f}, appending trailing silence")
 
-            # Append 500ms of silence so the last audio chunk is fully flushed
-            # through the Bey avatar rendering pipeline before the stream closes.
-            for _ in range(25):  # 25 × 20ms = 500ms
-                yield rtc.AudioFrame(
-                    data=silence_data,
-                    sample_rate=sample_rate,
-                    num_channels=1,
-                    samples_per_channel=samples_per_channel,
-                )
+            if use_avatar:
+                # Append 500ms of silence so the last audio chunk is fully flushed
+                # through the Bey avatar rendering pipeline before the stream closes.
+                for _ in range(25):  # 25 × 20ms = 500ms
+                    yield rtc.AudioFrame(
+                        data=silence_data,
+                        sample_rate=sample_rate,
+                        num_channels=1,
+                        samples_per_channel=samples_per_channel,
+                    )
             print(f"[TTS_NODE:{tts_call_id}] trailing silence done at {time.time():.3f}")
 
     # Helper to send state updates to the frontend via LiveKit Data Channel
@@ -350,6 +353,31 @@ async def entrypoint(ctx: JobContext):
     num_questions = len(config["questions"])
     mode = config.get("mode", "guided")
 
+    # Build click-mode prompt injections for Phase 2 (empty strings in voice mode)
+    if input_mode == "click":
+        click_step_a_en = (
+            "   **CLICK MODE**: Before asking for favorites, call `request_top_2_click(question_id)` "
+            "to mute the mic and enable card selection. The choices will be sent to you automatically "
+            "via a system message — do NOT wait for a vocal answer.\n"
+        )
+        click_step_b_en = (
+            "   **CLICK MODE**: Before asking for least liked, call `request_bottom_2_click(question_id)` "
+            "to mute the mic and enable card selection. The choices will be sent to you automatically "
+            "via a system message — do NOT wait for a vocal answer.\n"
+        )
+        click_step_a_fr = (
+            "   **MODE CLICK** : Avant de demander les favoris, appelez `request_top_2_click(question_id)` "
+            "pour couper le micro et activer la sélection par clic. Les choix vous seront transmis "
+            "automatiquement via un message système — n'attendez PAS de réponse vocale.\n"
+        )
+        click_step_b_fr = (
+            "   **MODE CLICK** : Avant de demander les moins aimés, appelez `request_bottom_2_click(question_id)` "
+            "pour couper le micro et activer la sélection par clic. Les choix vous seront transmis "
+            "automatiquement via un message système — n'attendez PAS de réponse vocale.\n"
+        )
+    else:
+        click_step_a_en = click_step_b_en = click_step_a_fr = click_step_b_fr = ""
+
     # Build Phase 4 block based on mode
     if mode == "discovery":
         phase4_en = """\
@@ -527,14 +555,14 @@ You must ask ONLY the questions listed below, one at a time, in order. There are
 For EACH question, follow these steps in order:
 
 **Step A — The 2 favorite choices:**
-1. Ask the question in a natural and engaging way, then ask the user for their **2 favorite choices** among the choices they can see on screen. NEVER list or read out the choices — the user can already see them. For example: "Among the choices in front of you, which 2 appeal to you the most?"
-2. Once the 2 choices are identified, IMMEDIATELY call `notify_top_2(question_id, top_2=[X, Y])` to notify the frontend (so it can hide those cards).
+1. Ask the question in a natural and engaging way, integrating the request for **2 favorites** directly into a single sentence. NEVER ask the question first and then ask for favorites as a separate sentence — that would require the user to speak twice. NEVER list or read out the choices — the user can already see them. For example, instead of "Which destination appeals to you the most? Among the choices, which 2 do you prefer?" say: "Among the destinations you can see, which 2 appeal to you the most?"
+{click_step_a_en}2. Once the 2 choices are identified, IMMEDIATELY call `notify_top_2(question_id, top_2=[X, Y])` to notify the frontend (so it can hide those cards).
 3. Ask them curiously **why** they like the **first choice**. Listen to their justification and briefly respond naturally.
 4. Then ask them **why** they like the **second choice**. Same thing, listen and respond.
 
 **Step B — The 2 least liked choices:**
 5. Transition naturally, for example "And among the remaining choices you can see, which 2 appeal to you the least?" The user must choose from the **remaining 4 choices only** (excluding their 2 favorites). NEVER accept a favorite as a least liked choice. If the user picks one of their favorites, point it out with humor, e.g. "Wait, you just told me you loved that one! You can only pick from the others."
-6. Ask them **why** for the **first least liked choice**. Listen without judging, respond.
+{click_step_b_en}6. Ask them **why** for the **first least liked choice**. Listen without judging, respond.
 7. Then **why** for the **second**. Same thing.
 
 **Step C — Confirmation (MANDATORY):**
@@ -645,7 +673,11 @@ HOW TO HANDLE IT:
 4. NEVER save or validate illogical/contradictory information without resolving it first.
 5. If the user confirms something that seems contradictory but is actually plausible (e.g., a 60-year-old who feels young), accept it gracefully.
 
-IMPORTANT REMINDER: You MUST speak in English at all times. Never switch to another language."""
+IMPORTANT REMINDER: You MUST speak in English at all times. Never switch to another language.
+
+--- ABSOLUTE RULE: FUNCTION CALLS ---
+
+NEVER write or display function call syntax in your text response (e.g., `notify_top_2(...)`, `functions.save_answer(...)`, etc.). Functions must be called ONLY through the tool interface, never mentioned or written in the text you speak to the user."""
 
     else:
         instructions = f"""Tu t'appelles {ai_name}. Tu travailles pour Le Studio des Parfums.
@@ -700,14 +732,14 @@ Tu dois poser UNIQUEMENT les questions listées ci-dessous, une par une, dans l'
 Pour CHAQUE question, suis ces étapes dans l'ordre:
 
 **Étape A — Les 2 choix préférés:**
-1. Posez la question de façon naturelle et engageante, puis demandez à l'utilisateur ses **2 choix préférés** parmi les choix qu'il voit à l'écran. Ne lisez et n'énumérez JAMAIS les choix — l'utilisateur les voit déjà devant lui. Par exemple : "Parmi les choix que vous avez sous les yeux, lesquels vous attirent le plus ?"
-2. Une fois les 2 choix identifiés, appelez IMMÉDIATEMENT `notify_top_2(question_id, top_2=[X, Y])` pour notifier le frontend (afin qu'il puisse masquer ces cartes).
+1. Posez la question de façon naturelle et engageante, en intégrant directement la demande des **2 favoris** dans une seule phrase. Ne posez JAMAIS la question du questionnaire d'abord et ne demandez PAS ensuite les 2 préférés dans une phrase séparée — cela obligerait l'utilisateur à parler deux fois. Ne lisez et n'énumérez JAMAIS les choix — l'utilisateur les voit déjà devant lui. Par exemple, au lieu de "Quelle destination vous attire le plus ? Parmi les choix, lesquels préférez-vous ?" dites : "Parmi les destinations que vous voyez, lesquelles vous attirent le plus ? Dites-moi vos 2 coups de cœur !"
+{click_step_a_fr}2. Une fois les 2 choix identifiés, appelez IMMÉDIATEMENT `notify_top_2(question_id, top_2=[X, Y])` pour notifier le frontend (afin qu'il puisse masquer ces cartes).
 3. Demandez-lui avec curiosité **pourquoi** il aime le **premier choix**. Écoutez sa justification et rebondissez brièvement dessus de manière naturelle.
 4. Puis demandez-lui **pourquoi** il aime le **deuxième choix**. Pareil, écoutez et rebondissez.
 
 **Étape B — Les 2 choix les moins aimés:**
 5. Enchaînez naturellement, par exemple "Et parmi les choix restants que vous voyez, lesquels vous attirent le moins ?" L'utilisateur doit choisir parmi les **4 choix restants uniquement** (en excluant ses 2 favoris). N'acceptez JAMAIS un favori comme choix le moins aimé. Si l'utilisateur choisit un de ses favoris, relevez-le avec humour, ex : "Attendez, vous venez de me dire que vous adoriez celui-là ! Choisissez plutôt parmi les autres."
-6. Demandez-lui **pourquoi** pour le **premier choix le moins aimé**. Écoutez sans juger, rebondissez.
+{click_step_b_fr}6. Demandez-lui **pourquoi** pour le **premier choix le moins aimé**. Écoutez sans juger, rebondissez.
 7. Puis **pourquoi** pour le **deuxième**. Pareil.
 
 **Étape C — Confirmation (OBLIGATOIRE):**
@@ -816,12 +848,45 @@ COMMENT GÉRER :
 4. Ne JAMAIS sauvegarder ou valider une information illogique/contradictoire sans l'avoir résolue d'abord.
 5. Si l'utilisateur confirme quelque chose qui semble contradictoire mais qui est en fait plausible (ex : un sexagénaire qui se sent jeune), acceptez-le avec grâce.
 
-RAPPEL IMPORTANT: Vouvoyez TOUJOURS l'utilisateur. Ne le tutoyez JAMAIS."""
+RAPPEL IMPORTANT: Vouvoyez TOUJOURS l'utilisateur. Ne le tutoyez JAMAIS.
+
+--- RÈGLE ABSOLUE : APPELS DE FONCTIONS ---
+
+N'écrivez et n'affichez JAMAIS la syntaxe d'un appel de fonction dans votre réponse textuelle (ex : `notify_top_2(...)`, `functions.save_answer(...)`, etc.). Les fonctions doivent être appelées UNIQUEMENT via l'interface d'outils, jamais mentionnées ou écrites dans le texte que vous dites à l'utilisateur."""
+
+    # Click-mode tools: signal the frontend to enable card click selection and mute the mic.
+    # Only added to the agent when input_mode == "click".
+    @function_tool()
+    async def request_top_2_click(question_id: int):
+        """CLICK MODE ONLY — Signals the frontend to mute the mic and enable click selection for the 2 favorite choices. Call this IMMEDIATELY before asking for the favorites. / MODE CLICK UNIQUEMENT — Signale au frontend de couper le micro et d'activer la sélection par clic pour les 2 choix préférés. Appelez cette fonction IMMÉDIATEMENT avant de demander les favoris."""
+        await send_state_update({
+            "type": "waiting_for_top_2",
+            "state": "questionnaire",
+            "question_id": question_id,
+        })
+        if is_en:
+            return f"Frontend notified: mic muted, waiting for user to click 2 favorite choices for question {question_id}."
+        return f"Frontend notifié : micro coupé, en attente du clic de l'utilisateur pour ses 2 choix préférés (question {question_id})."
+
+    @function_tool()
+    async def request_bottom_2_click(question_id: int):
+        """CLICK MODE ONLY — Signals the frontend to mute the mic and enable click selection for the 2 least liked choices. Call this IMMEDIATELY before asking for the least liked. / MODE CLICK UNIQUEMENT — Signale au frontend de couper le micro et d'activer la sélection par clic pour les 2 choix les moins aimés. Appelez cette fonction IMMÉDIATEMENT avant de demander les moins aimés."""
+        await send_state_update({
+            "type": "waiting_for_bottom_2",
+            "state": "questionnaire",
+            "question_id": question_id,
+        })
+        if is_en:
+            return f"Frontend notified: mic muted, waiting for user to click 2 least liked choices for question {question_id}."
+        return f"Frontend notifié : micro coupé, en attente du clic de l'utilisateur pour ses 2 choix les moins aimés (question {question_id})."
+
+    base_tools = [save_user_profile, notify_top_2, save_answer, generate_formulas,
+                  select_formula, change_formula_type, get_available_ingredients, replace_note, enter_pause_mode]
+    click_tools = [request_top_2_click, request_bottom_2_click] if input_mode == "click" else []
 
     agent = PausableAgent(
         instructions=instructions,
-        tools=[save_user_profile, notify_top_2, save_answer, generate_formulas,
-               select_formula, change_formula_type, get_available_ingredients, replace_note, enter_pause_mode],
+        tools=base_tools + click_tools,
     )
 
     # Create agent session with STT + LLM + TTS pipeline
@@ -842,60 +907,62 @@ RAPPEL IMPORTANT: Vouvoyez TOUJOURS l'utilisateur. Ne le tutoyez JAMAIS."""
         allow_interruptions=False,
     )
 
-    avatar_id = pick_avatar(voice_gender)
-    avatar = bey.AvatarSession(avatar_id=avatar_id)
+    if use_avatar:
+        avatar_id = pick_avatar(voice_gender)
+        avatar = bey.AvatarSession(avatar_id=avatar_id)
 
-    # Start avatar BEFORE session.start() so that output.audio is already set to
-    # DataStreamAudioOutput when session.start() runs. This prevents session.start()
-    # from creating a RoomIO audio track in parallel, which would cause the greeting
-    # to be played twice (once via RoomIO, once via the avatar DataStream).
-    try:
-        await asyncio.wait_for(avatar.start(session, room=ctx.room), timeout=15.0)
-    except (asyncio.TimeoutError, Exception) as e:
-        print(f"Avatar start failed or timed out, proceeding without avatar: {e}")
+        # Start avatar BEFORE session.start() so that output.audio is already set to
+        # DataStreamAudioOutput when session.start() runs. This prevents session.start()
+        # from creating a RoomIO audio track in parallel, which would cause the greeting
+        # to be played twice (once via RoomIO, once via the avatar DataStream).
+        try:
+            await asyncio.wait_for(avatar.start(session, room=ctx.room), timeout=15.0)
+        except (asyncio.TimeoutError, Exception) as e:
+            print(f"Avatar start failed or timed out, proceeding without avatar: {e}")
 
-    # Wait for the Bey avatar to join the room and publish its video track BEFORE
-    # starting the session. If session.start() is called first, the user could speak
-    # during the Bey warm-up window (~5s), triggering an LLM reply whose TTS audio
-    # frames would be dropped (DataStreamAudioOutput discards frames until Bey's video
-    # track is ready), leaving the agent stuck in "thinking" state with no audio.
-    # Wait for Bey to be stably present with a video track for 3 consecutive checks
-    # (1.5s). Bey sometimes disconnects and reconnects right after its first join;
-    # breaking on the first detection causes generate_reply to run while Bey is
-    # mid-reconnect, which drops the audio frames and produces a silent greeting.
-    import time as _time
-    _BEY_IDENTITY = "bey-avatar-agent"
-    bey_stable_count = 0
-    print(f"[BEY_WAIT] Starting Bey stability check at {_time.time():.3f}")
-    for _i in range(50):  # up to 25s
-        bey_participant = next(
-            (p for p in ctx.room.remote_participants.values()
-             if p.identity == _BEY_IDENTITY),
-            None,
-        )
-        if bey_participant and any(
-            pub.kind == rtc.TrackKind.KIND_VIDEO
-            for pub in bey_participant.track_publications.values()
-        ):
-            bey_stable_count += 1
-            print(f"[BEY_WAIT] Bey stable_count={bey_stable_count}/3 at {_time.time():.3f}")
-            if bey_stable_count >= 3:  # stable for 1.5s
-                print(f"[BEY_WAIT] Bey stable! Proceeding. at {_time.time():.3f}")
-                break
+        # Wait for the Bey avatar to join the room and publish its video track BEFORE
+        # starting the session. If session.start() is called first, the user could speak
+        # during the Bey warm-up window (~5s), triggering an LLM reply whose TTS audio
+        # frames would be dropped (DataStreamAudioOutput discards frames until Bey's video
+        # track is ready), leaving the agent stuck in "thinking" state with no audio.
+        # Wait for Bey to be stably present with a video track for 3 consecutive checks
+        # (1.5s). Bey sometimes disconnects and reconnects right after its first join;
+        # breaking on the first detection causes generate_reply to run while Bey is
+        # mid-reconnect, which drops the audio frames and produces a silent greeting.
+        import time as _time
+        _BEY_IDENTITY = "bey-avatar-agent"
+        bey_stable_count = 0
+        print(f"[BEY_WAIT] Starting Bey stability check at {_time.time():.3f}")
+        for _i in range(50):  # up to 25s
+            bey_participant = next(
+                (p for p in ctx.room.remote_participants.values()
+                 if p.identity == _BEY_IDENTITY),
+                None,
+            )
+            if bey_participant and any(
+                pub.kind == rtc.TrackKind.KIND_VIDEO
+                for pub in bey_participant.track_publications.values()
+            ):
+                bey_stable_count += 1
+                print(f"[BEY_WAIT] Bey stable_count={bey_stable_count}/3 at {_time.time():.3f}")
+                if bey_stable_count >= 3:  # stable for 1.5s
+                    print(f"[BEY_WAIT] Bey stable! Proceeding. at {_time.time():.3f}")
+                    break
+            else:
+                if bey_stable_count > 0:
+                    print(f"[BEY_WAIT] Bey lost track, resetting stable_count at {_time.time():.3f}")
+                bey_stable_count = 0
+            await asyncio.sleep(0.5)
         else:
-            if bey_stable_count > 0:
-                print(f"[BEY_WAIT] Bey lost track, resetting stable_count at {_time.time():.3f}")
-            bey_stable_count = 0
-        await asyncio.sleep(0.5)
-    else:
-        print(f"[BEY_WAIT] Bey avatar not ready for room {ctx.room.name} after 25s, proceeding anyway at {_time.time():.3f}")
+            print(f"[BEY_WAIT] Bey avatar not ready for room {ctx.room.name} after 25s, proceeding anyway at {_time.time():.3f}")
 
-    # Extra delay to let Cartesia TTS WebSocket + Bey DataStream fully initialise
-    # before generate_reply() fires the first greeting audio.
-    print(f"[SESSION] Waiting 1.5s for Cartesia + Bey DataStream to be ready at {_time.time():.3f}")
-    await asyncio.sleep(1.5)
-    print(f"[SESSION] Extra wait done at {_time.time():.3f}")
+        # Extra delay to let Cartesia TTS WebSocket + Bey DataStream fully initialise
+        # before generate_reply() fires the first greeting audio.
+        print(f"[SESSION] Waiting 1.5s for Cartesia + Bey DataStream to be ready at {_time.time():.3f}")
+        await asyncio.sleep(1.5)
+        print(f"[SESSION] Extra wait done at {_time.time():.3f}")
 
+    import time as _time
     # Connect agent to room only after Bey is stable, so no user speech can trigger
     # a TTS response before the avatar's DataStream output is ready.
     print(f"[SESSION] Calling session.start() at {_time.time():.3f}")
@@ -913,11 +980,13 @@ RAPPEL IMPORTANT: Vouvoyez TOUJOURS l'utilisateur. Ne le tutoyez JAMAIS."""
             "state": ev.new_state,  # "initializing" | "listening" | "thinking" | "speaking" | "idle"
         }))
 
-    # Listen for control messages from the frontend (e.g. resume button)
+    # Listen for control messages from the frontend (resume button, click-mode choices)
     def _on_data_received(data_packet):
         try:
             msg = json.loads(data_packet.data.decode("utf-8"))
-            if msg.get("type") == "resume" and paused[0]:
+            msg_type = msg.get("type")
+
+            if msg_type == "resume" and paused[0]:
                 paused[0] = False
                 session.input.set_audio_enabled(True)
                 print(f"Agent resumed via frontend button for room: {ctx.room.name}")
@@ -926,8 +995,48 @@ RAPPEL IMPORTANT: Vouvoyez TOUJOURS l'utilisateur. Ne le tutoyez JAMAIS."""
                 else:
                     resume_prompt = "L'utilisateur vient de cliquer sur un bouton pour reprendre la conversation. Ne dites surtout pas bonjour et ne vous présentez pas à nouveau. Dites simplement quelque chose comme 'Je vous écoute, quelle est votre question ?' ou 'Allez-y, je suis là.' Soyez bref(ve) et naturel(le)."
                 asyncio.ensure_future(session.generate_reply(instructions=resume_prompt))
-        except Exception:
-            pass
+
+            elif msg_type == "questionnaire_top_2" and input_mode == "click":
+                question_id = msg.get("question_id")
+                values = msg.get("values", [])
+                print(f"[CLICK] top_2 received for question {question_id}: {values}")
+                if is_en:
+                    prompt = (
+                        f"The user clicked their 2 favorite choices: {values} for question {question_id}. "
+                        f"IMMEDIATELY call notify_top_2(question_id={question_id}, top_2={values}), "
+                        f"then ask why they like their first favorite. Continue naturally."
+                    )
+                else:
+                    prompt = (
+                        f"L'utilisateur a cliqué sur ses 2 choix préférés : {values} pour la question {question_id}. "
+                        f"Appelle IMMÉDIATEMENT notify_top_2(question_id={question_id}, top_2={values}), "
+                        f"puis demande-lui pourquoi il aime son premier favori. Continue naturellement."
+                    )
+                asyncio.ensure_future(session.generate_reply(instructions=prompt))
+
+            elif msg_type == "questionnaire_bottom_2" and input_mode == "click":
+                question_id = msg.get("question_id")
+                values = msg.get("values", [])
+                top_2 = msg.get("top_2", [])
+                question = next((q for q in config["questions"] if q["id"] == question_id), None)
+                question_text = question["question"] if question else ""
+                print(f"[CLICK] bottom_2 received for question {question_id}: {values}")
+                if is_en:
+                    prompt = (
+                        f"The user clicked their 2 least liked choices: {values} for question {question_id}. "
+                        f"IMMEDIATELY call save_answer(question_id={question_id}, question_text='{question_text}', "
+                        f"top_2={top_2}, bottom_2={values}), then move naturally to the next question."
+                    )
+                else:
+                    prompt = (
+                        f"L'utilisateur a cliqué sur ses 2 choix les moins aimés : {values} pour la question {question_id}. "
+                        f"Appelle IMMÉDIATEMENT save_answer(question_id={question_id}, question_text='{question_text}', "
+                        f"top_2={top_2}, bottom_2={values}), puis enchaîne naturellement sur la question suivante."
+                    )
+                asyncio.ensure_future(session.generate_reply(instructions=prompt))
+
+        except Exception as e:
+            print(f"[DATA_RECEIVED] Error handling message: {e}")
 
     ctx.room.on("data_received", _on_data_received)
 

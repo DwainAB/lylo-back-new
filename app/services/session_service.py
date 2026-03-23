@@ -6,7 +6,7 @@ from app.services.livekit_service import create_token, create_room_with_agent
 from app.services import session_store
 
 
-async def create_session(language: str, voice_gender: str, question_count: int, mode: str = "guided", customer_email: str | None = None) -> dict:
+async def create_session(language: str, voice_gender: str, question_count: int, mode: str = "guided", input_mode: str = "voice", customer_email: str | None = None, avatar: bool = True) -> dict:
     settings = get_settings()
 
     session_id = str(uuid.uuid4())
@@ -28,7 +28,9 @@ async def create_session(language: str, voice_gender: str, question_count: int, 
         room_name=room_name,
         questions=questions,
         mode=mode,
+        input_mode=input_mode,
         customer_email=customer_email,
+        avatar=avatar,
     )
 
     await create_room_with_agent(room_name)

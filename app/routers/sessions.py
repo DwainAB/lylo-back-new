@@ -42,7 +42,9 @@ async def start_session(body: StartSessionRequest, db: AsyncSession = Depends(ge
         voice_gender=body.voice_gender,
         question_count=body.question_count,
         mode=body.mode,
+        input_mode=body.input_mode,
         customer_email=body.email,
+        avatar=body.avatar,
     )
     return result
 
