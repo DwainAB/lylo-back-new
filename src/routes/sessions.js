@@ -3,10 +3,12 @@
 const express = require('express');
 const { v4: uuidv4 } = require('uuid');
 const { RtcTokenBuilder, RtcRole } = require('agora-access-token');
+const { AccessToken } = require('livekit-server-sdk');
 const router = express.Router();
 
 const store = require('../services/sessionStore');
 const formulaService = require('../services/formulaService');
+const beyondService = require('../services/beyondService');
 const mailService = require('../services/mailService');
 const db = require('../db');
 const { QUESTIONS_FR, QUESTIONS_EN, enrichQuestions } = require('../data/questions');
@@ -45,6 +47,16 @@ function generateAgoraToken(roomName) {
   if (!cert || cert === 'YOUR_AGORA_APP_CERTIFICATE') return null;
   const expireTime = Math.floor(Date.now() / 1000) + 3600;
   return RtcTokenBuilder.buildTokenWithUid(appId, cert, roomName, 0, RtcRole.PUBLISHER, expireTime);
+}
+
+// ── Token LiveKit ──────────────────────────────────────────────────────
+async function generateLiveKitToken(roomName, identity) {
+  const apiKey = process.env.LIVEKIT_API_KEY;
+  const apiSecret = process.env.LIVEKIT_API_SECRET;
+  if (!apiKey || !apiSecret) return null;
+  const at = new AccessToken(apiKey, apiSecret, { identity });
+  at.addGrant({ roomJoin: true, room: roomName, canPublish: true, canSubscribe: true });
+  return await at.toJwt();
 }
 
 // ── POST /api/session/start ────────────────────────────────────────────
@@ -104,6 +116,22 @@ router.post('/session/start', async (req, res) => {
     });
 
     const token = generateAgoraToken(roomName);
+    const livekitToken = await generateLiveKitToken(roomName, userIdentity);
+
+    // ── Beyond avatar ──────────────────────────────────────────────────
+    let beyondLivekitUrl = process.env.LIVEKIT_URL || null;
+    let beyondLivekitToken = livekitToken;
+
+    if (avatar && process.env.BEY_API_KEY) {
+      const agentId = voice_gender === 'male' ? process.env.BEY_AGENT_MALE : process.env.BEY_AGENT_FEMALE;
+      try {
+        const bey = await beyondService.startAvatarCall({ agentId });
+        beyondLivekitUrl = bey.livekitUrl || beyondLivekitUrl;
+        beyondLivekitToken = bey.livekitToken || beyondLivekitToken;
+      } catch (e) {
+        console.error('[Beyond] failed to start avatar:', e.message);
+      }
+    }
 
     res.json({
       session_id: sessionId,
@@ -111,6 +139,8 @@ router.post('/session/start', async (req, res) => {
       token,
       agora_app_id: process.env.AGORA_APP_ID,
       identity: userIdentity,
+      livekit_url: beyondLivekitUrl,
+      livekit_token: beyondLivekitToken,
     });
   } catch (err) {
     console.error('[session/start]', err);
@@ -267,6 +297,92 @@ router.post('/session/:id/replace-note', async (req, res) => {
   }
 
   res.json(result);
+});
+
+// ── POST /api/session/silent-submit ───────────────────────────────────
+// Mode silencieux : un seul appel qui reçoit profil + réponses, génère les formules et les retourne.
+// Body: { profile: { first_name, gender, age, has_allergies, allergies? },
+//         answers: [ { question_id, question_text, top_2, bottom_2 } ],
+//         language?, formula_type?, email? }
+router.post('/session/silent-submit', async (req, res) => {
+  try {
+    const {
+      profile,
+      answers,
+      language = 'fr',
+      formula_type = null,
+      email = null,
+    } = req.body;
+
+    if (!profile || !answers || !Array.isArray(answers) || answers.length === 0) {
+      return res.status(400).json({ detail: 'profile et answers sont requis' });
+    }
+
+    // Vérification client si email fourni
+    if (email) {
+      const customer = await db.getCustomerByEmail(email);
+      if (customer) {
+        if (parseInt(customer.sessions_available) <= 0) {
+          return res.status(403).json({ detail: 'Aucune session disponible' });
+        }
+        const today = new Date().toISOString().slice(0, 10);
+        if (customer.max_date && today > customer.max_date) {
+          return res.status(403).json({ detail: "Date d'accès expirée" });
+        }
+        await db.updateCustomer(customer.id, { sessions_available: String(parseInt(customer.sessions_available) - 1) });
+      }
+    }
+
+    const sessionId = uuidv4();
+    const questionsPool = language === 'fr' ? QUESTIONS_FR : QUESTIONS_EN;
+    const questions = enrichQuestions(questionsPool);
+
+    // Créer la session en mémoire
+    store.saveSessionMeta(sessionId, {
+      language,
+      voiceGender: 'female',
+      voiceId: null,
+      roomName: null,
+      questions,
+      mode: 'silent',
+      inputMode: 'silent',
+      customerEmail: email,
+      avatar: false,
+    });
+
+    // Sauvegarder le profil
+    for (const [field, value] of Object.entries(profile)) {
+      store.saveUserProfile(sessionId, field, String(value));
+    }
+
+    if (!store.isProfileComplete(sessionId)) {
+      const missing = store.getMissingProfileFields(sessionId);
+      return res.status(400).json({ detail: 'Profil incomplet', missing_fields: missing });
+    }
+
+    // Sauvegarder les réponses
+    for (const ans of answers) {
+      const { question_id, question_text, top_2, bottom_2 } = ans;
+      const question = questions.find(q => q.id === question_id);
+      let normalizedTop2 = top_2;
+      let normalizedBottom2 = bottom_2;
+      if (question) {
+        const validLabels = question.choices.map(c => (typeof c === 'object' ? c.label : c));
+        normalizedTop2 = normalizeChoices(top_2, validLabels);
+        normalizedBottom2 = normalizeChoices(bottom_2, validLabels);
+      }
+      store.saveAnswer(sessionId, question_id, question_text, normalizedTop2, normalizedBottom2);
+    }
+
+    // Générer les formules
+    const result = formulaService.generateFormulas(sessionId, formula_type);
+    if (result.error) return res.status(400).json({ detail: result.error });
+
+    res.json({ session_id: sessionId, formulas: result.formulas });
+  } catch (err) {
+    console.error('[silent-submit]', err);
+    res.status(500).json({ detail: `Erreur: ${err.message}` });
+  }
 });
 
 // ── GET /api/sessions/all-answers ─────────────────────────────────────

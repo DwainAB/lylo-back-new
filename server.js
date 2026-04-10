@@ -3,6 +3,7 @@
 require('dotenv').config();
 
 const http = require('http');
+const path = require('path');
 const express = require('express');
 const cors = require('cors');
 const { WebSocketServer } = require('ws');
@@ -27,6 +28,9 @@ app.use(cors({
 }));
 
 app.use(express.json());
+
+// ── Fichiers statiques (images des choix) ──────────────────────────────────
+app.use('/static/choices', express.static(path.join(__dirname, 'src/data/choices')));
 
 // ── Routes ─────────────────────────────────────────────────────────────────
 app.use('/api', sessionRoutes);

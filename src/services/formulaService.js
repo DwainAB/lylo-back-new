@@ -7,7 +7,7 @@ const { EN_TO_FR_CHOICES } = require('../data/questions');
 const { PROFILE_GENDERS, PROFILE_DESCRIPTIONS, PROFILE_DESCRIPTIONS_EN, INGREDIENT_EN_TO_FR, normalizeProfile } = require('../data/profiles');
 const store = require('./sessionStore');
 
-const DATA_DIR = path.resolve(__dirname, '../../app/data');
+const DATA_DIR = path.resolve(__dirname, '../data');
 const XLSX_PATH = path.join(DATA_DIR, 'Coffret-description.xlsx');
 const NOTE_SCORING_PATH = path.join(DATA_DIR, 'note_scoring_mapping.json');
 
